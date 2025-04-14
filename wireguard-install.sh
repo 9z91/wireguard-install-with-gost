@@ -1,12 +1,19 @@
 #!/bin/bash
 
-# Secure WireGuard server installer
+# Secure WireGuard server installer with Gost proxy support
 # https://github.com/angristan/wireguard-install
 
 RED='\033[0;31m'
 ORANGE='\033[0;33m'
 GREEN='\033[0;32m'
 NC='\033[0m'
+
+# Gost proxy configuration
+GOST_ENABLED=false
+GOST_SOCKS5_HOST=""
+GOST_SOCKS5_PORT=""
+GOST_SOCKS5_USER=""
+GOST_SOCKS5_PASS=""
 
 function isRoot() {
 	if [ "${EUID}" -ne 0 ]; then
@@ -179,16 +186,92 @@ function installQuestions() {
 		fi
 	done
 
+	# Gost proxy configuration
+	read -rp "Do you want to enable Gost proxy? [y/n]: " -e -i "n" GOST_ENABLE_CHOICE
+	if [[ ${GOST_ENABLE_CHOICE} == "y" ]]; then
+		GOST_ENABLED=true
+		until [[ ${GOST_SOCKS5_HOST} =~ ^[a-zA-Z0-9.-]+$ ]]; do
+			read -rp "SOCKS5 proxy host: " GOST_SOCKS5_HOST
+		done
+		until [[ ${GOST_SOCKS5_PORT} =~ ^[0-9]+$ ]] && [ "${GOST_SOCKS5_PORT}" -ge 1 ] && [ "${GOST_SOCKS5_PORT}" -le 65535 ]; do
+			read -rp "SOCKS5 proxy port: " GOST_SOCKS5_PORT
+		done
+		read -rp "SOCKS5 proxy username: " GOST_SOCKS5_USER
+		read -rp "SOCKS5 proxy password: " GOST_SOCKS5_PASS
+	fi
+
 	echo ""
 	echo "Okay, that was all I needed. We are ready to setup your WireGuard server now."
 	echo "You will be able to generate a client at the end of the installation."
 	read -n1 -r -p "Press any key to continue..."
 }
 
-function installWireGuard() {
-	# Run setup questions first
-	installQuestions
+function installGost() {
+	if [[ ${GOST_ENABLED} == true ]]; then
+		echo "Installing Gost..."
+		# Download and install Gost
+		ARCH=$(uname -m)
+		case ${ARCH} in
+			x86_64)
+				ARCH=amd64
+				;;
+			aarch64)
+				ARCH=arm64
+				;;
+			*)
+				echo "Unsupported architecture: ${ARCH}"
+				exit 1
+				;;
+		esac
+		
+		wget -O /tmp/gost.tar.gz "https://github.com/ginuerzh/gost/releases/download/v2.12.0/gost_2.12.0_linux_${ARCH}.tar.gz"
+		tar -xzf /tmp/gost.tar.gz -C /tmp
+		mv /tmp/gost /usr/local/bin/
+		chmod +x /usr/local/bin/gost
+		rm /tmp/gost.tar.gz
 
+		# Create Gost service
+		cat > /etc/systemd/system/gost.service << EOF
+[Unit]
+Description=Gost Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/gost -L=socks5://:1080 -F=socks5://${GOST_SOCKS5_USER}:${GOST_SOCKS5_PASS}@${GOST_SOCKS5_HOST}:${GOST_SOCKS5_PORT} -L=udp://:1080 -F=udp://${GOST_SOCKS5_USER}:${GOST_SOCKS5_PASS}@${GOST_SOCKS5_HOST}:${GOST_SOCKS5_PORT}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+		systemctl daemon-reload
+		systemctl enable gost
+		systemctl start gost
+
+		# Add routing rules for Gost
+		iptables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080
+		iptables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080
+		ip6tables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080
+		ip6tables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080
+
+		# Save iptables rules
+		if [[ ${OS} == 'ubuntu' ]] || [[ ${OS} == 'debian' ]]; then
+			apt-get install -y iptables-persistent
+			iptables-save > /etc/iptables/rules.v4
+			ip6tables-save > /etc/iptables/rules.v6
+		elif [[ ${OS} == 'centos' ]] || [[ ${OS} == 'almalinux' ]] || [[ ${OS} == 'rocky' ]]; then
+			yum install -y iptables-services
+			iptables-save > /etc/sysconfig/iptables
+			ip6tables-save > /etc/sysconfig/ip6tables
+			systemctl enable iptables
+			systemctl enable ip6tables
+		fi
+	fi
+}
+
+function installWireGuard() {
 	# Install WireGuard tools and module
 	if [[ ${OS} == 'ubuntu' ]] || [[ ${OS} == 'debian' && ${VERSION_ID} -gt 10 ]]; then
 		apt-get update
@@ -250,7 +333,12 @@ SERVER_PRIV_KEY=${SERVER_PRIV_KEY}
 SERVER_PUB_KEY=${SERVER_PUB_KEY}
 CLIENT_DNS_1=${CLIENT_DNS_1}
 CLIENT_DNS_2=${CLIENT_DNS_2}
-ALLOWED_IPS=${ALLOWED_IPS}" >/etc/wireguard/params
+ALLOWED_IPS=${ALLOWED_IPS}
+GOST_ENABLED=${GOST_ENABLED}
+GOST_SOCKS5_HOST=${GOST_SOCKS5_HOST}
+GOST_SOCKS5_PORT=${GOST_SOCKS5_PORT}
+GOST_SOCKS5_USER=${GOST_SOCKS5_USER}
+GOST_SOCKS5_PASS=${GOST_SOCKS5_PASS}" >/etc/wireguard/params
 
 	# Add server interface
 	echo "[Interface]
@@ -264,7 +352,25 @@ PrivateKey = ${SERVER_PRIV_KEY}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
 		echo "PostUp = firewall-cmd --zone=public --add-interface=${SERVER_WG_NIC} && firewall-cmd --add-port ${SERVER_PORT}/udp && firewall-cmd --add-rich-rule='rule family=ipv4 source address=${FIREWALLD_IPV4_ADDRESS}/24 masquerade' && firewall-cmd --add-rich-rule='rule family=ipv6 source address=${FIREWALLD_IPV6_ADDRESS}/24 masquerade'
 PostDown = firewall-cmd --zone=public --add-interface=${SERVER_WG_NIC} && firewall-cmd --remove-port ${SERVER_PORT}/udp && firewall-cmd --remove-rich-rule='rule family=ipv4 source address=${FIREWALLD_IPV4_ADDRESS}/24 masquerade' && firewall-cmd --remove-rich-rule='rule family=ipv6 source address=${FIREWALLD_IPV6_ADDRESS}/24 masquerade'" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
 	else
-		echo "PostUp = iptables -I INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
+		if [[ ${GOST_ENABLED} == true ]]; then
+			echo "PostUp = iptables -I INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
+PostUp = iptables -I FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
+PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
+PostUp = iptables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080
+PostUp = iptables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080
+PostUp = ip6tables -I FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
+PostUp = ip6tables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080
+PostUp = ip6tables -t nat -A PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080
+PostDown = iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
+PostDown = iptables -D FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
+PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
+PostDown = iptables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080
+PostDown = iptables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080
+PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
+PostDown = ip6tables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080
+PostDown = ip6tables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+		else
+			echo "PostUp = iptables -I INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT
 PostUp = iptables -I FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT
 PostUp = iptables -I FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
@@ -276,6 +382,7 @@ PostDown = iptables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE
 PostDown = ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT
 PostDown = ip6tables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE" >>"/etc/wireguard/${SERVER_WG_NIC}.conf"
+		fi
 	fi
 
 	# Enable routing on the server
@@ -481,6 +588,11 @@ function uninstallWg() {
 	if [[ $REMOVE == 'y' ]]; then
 		checkOS
 
+		# Load WireGuard parameters if they exist
+		if [[ -e /etc/wireguard/params ]]; then
+			source /etc/wireguard/params
+		fi
+
 		if [[ ${OS} == 'alpine' ]]; then
 			rc-service "wg-quick.${SERVER_WG_NIC}" stop
 			rc-update del "wg-quick.${SERVER_WG_NIC}"
@@ -489,6 +601,41 @@ function uninstallWg() {
 		else
 			systemctl stop "wg-quick@${SERVER_WG_NIC}"
 			systemctl disable "wg-quick@${SERVER_WG_NIC}"
+		fi
+
+		# Stop and disable Gost if it was installed
+		if [[ ${GOST_ENABLED} == true ]]; then
+			systemctl stop gost
+			systemctl disable gost
+			rm -f /usr/local/bin/gost
+			rm -f /etc/systemd/system/gost.service
+			
+			# Remove Gost iptables rules
+			if [[ -n ${SERVER_WG_NIC} ]]; then
+				iptables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080 2>/dev/null || true
+				iptables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080 2>/dev/null || true
+				ip6tables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p tcp -j REDIRECT --to-port 1080 2>/dev/null || true
+				ip6tables -t nat -D PREROUTING -i ${SERVER_WG_NIC} -p udp -j REDIRECT --to-port 1080 2>/dev/null || true
+			fi
+		fi
+
+		# Remove WireGuard iptables rules
+		if [[ -n ${SERVER_WG_NIC} && -n ${SERVER_PORT} ]]; then
+			iptables -D INPUT -p udp --dport ${SERVER_PORT} -j ACCEPT 2>/dev/null || true
+			iptables -D FORWARD -i ${SERVER_PUB_NIC} -o ${SERVER_WG_NIC} -j ACCEPT 2>/dev/null || true
+			iptables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT 2>/dev/null || true
+			iptables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE 2>/dev/null || true
+			ip6tables -D FORWARD -i ${SERVER_WG_NIC} -j ACCEPT 2>/dev/null || true
+			ip6tables -t nat -D POSTROUTING -o ${SERVER_PUB_NIC} -j MASQUERADE 2>/dev/null || true
+		fi
+
+		# Save iptables rules
+		if [[ ${OS} == 'ubuntu' ]] || [[ ${OS} == 'debian' ]]; then
+			iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+			ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+		elif [[ ${OS} == 'centos' ]] || [[ ${OS} == 'almalinux' ]] || [[ ${OS} == 'rocky' ]]; then
+			iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+			ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || true
 		fi
 
 		if [[ ${OS} == 'ubuntu' ]]; then
@@ -511,13 +658,19 @@ function uninstallWg() {
 		elif [[ ${OS} == 'arch' ]]; then
 			pacman -Rs --noconfirm wireguard-tools qrencode
 		elif [[ ${OS} == 'alpine' ]]; then
-			(cd qrencode-4.1.1 || exit && make uninstall)
-			rm -rf qrencode-* || exit
+			(cd qrencode-4.1.1 2>/dev/null && make uninstall) || true
+			rm -rf qrencode-* 2>/dev/null || true
 			apk del wireguard-tools build-base libpng-dev
 		fi
 
+		# Remove all configuration files
 		rm -rf /etc/wireguard
 		rm -f /etc/sysctl.d/wg.conf
+
+		# Remove backports repository if it was added
+		if [[ ${OS} == 'debian' ]]; then
+			rm -f /etc/apt/sources.list.d/backports.list
+		fi
 
 		if [[ ${OS} == 'alpine' ]]; then
 			rc-service --quiet "wg-quick.${SERVER_WG_NIC}" status &>/dev/null
@@ -585,5 +738,7 @@ if [[ -e /etc/wireguard/params ]]; then
 	source /etc/wireguard/params
 	manageMenu
 else
+	installQuestions
+	installGost
 	installWireGuard
 fi
