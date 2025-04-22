@@ -69,3 +69,112 @@ This project is under the [MIT Licence](https://raw.githubusercontent.com/angris
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=angristan/wireguard-install&type=Date)](https://star-history.com/#angristan/wireguard-install&Date)
+
+# WireGuard Manager API
+
+A simple REST API for managing WireGuard clients using the wireguard-install.sh script.
+
+## Prerequisites
+
+- Go 1.21 or later
+- WireGuard installed and configured using wireguard-install.sh
+- Root access (required for WireGuard operations)
+- Docker (optional, for containerized deployment)
+
+## Installation
+
+### Local Installation
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/wireguard-manager.git
+cd wireguard-manager
+```
+
+2. Install dependencies:
+
+```bash
+go mod download
+```
+
+3. Build the application:
+
+```bash
+go build
+```
+
+4. Run the application:
+
+```bash
+sudo WG_AUTH_TOKEN=your-secure-token ./wireguard-manager
+```
+
+### Docker Installation
+
+1. Build the Docker image:
+
+```bash
+docker build -t wireguard-manager .
+```
+
+2. Run the container:
+
+```bash
+docker run -d \
+  --name wireguard-manager \
+  -p 8080:8080 \
+  -e WG_AUTH_TOKEN=your-secure-token \
+  --cap-add=NET_ADMIN \
+  wireguard-manager
+```
+
+## Usage
+
+The API will be available at `http://localhost:8080`
+
+### Authentication
+
+All API endpoints require bearer token authentication. Include the token in the Authorization header:
+
+```bash
+curl -H "Authorization: Bearer your-secure-token" http://localhost:8080/clients
+```
+
+### API Endpoints
+
+#### Create a new client
+
+```bash
+curl -X POST http://localhost:8080/clients \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secure-token" \
+  -d '{"name": "client1"}'
+```
+
+#### List all clients
+
+```bash
+curl -H "Authorization: Bearer your-secure-token" http://localhost:8080/clients
+```
+
+#### Delete a client
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer your-secure-token" \
+  http://localhost:8080/clients/client1
+```
+
+## Security Note
+
+This application must be run as root since it needs to execute WireGuard commands. Make sure to:
+
+1. Only expose the API to trusted networks
+2. Use HTTPS in production
+3. Use a strong bearer token
+4. Regularly update the application and its dependencies
+
+## License
+
+MIT License
