@@ -56,7 +56,7 @@ func createClient(c *gin.Context) {
 	}
 
 	// Execute wireguard-install.sh with the client name
-	cmd := exec.Command("./wireguard-install.sh")
+	cmd := exec.Command("/usr/local/bin/wireguard-install.sh")
 	cmd.Stdin = strings.NewReader(client.Name + "\n")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -70,7 +70,7 @@ func createClient(c *gin.Context) {
 
 func listClients(c *gin.Context) {
 	// Execute wireguard-install.sh to list clients
-	cmd := exec.Command("./wireguard-install.sh")
+	cmd := exec.Command("/usr/local/bin/wireguard-install.sh")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("Failed to list clients: ", err)
@@ -89,7 +89,7 @@ func deleteClient(c *gin.Context) {
 	}
 
 	// Execute wireguard-install.sh to delete the client
-	cmd := exec.Command("./wireguard-install.sh")
+	cmd := exec.Command("/usr/local/bin/wireguard-install.sh")
 	cmd.Stdin = strings.NewReader("3\n" + clientName + "\n")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
