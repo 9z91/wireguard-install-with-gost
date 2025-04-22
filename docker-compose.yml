@@ -13,6 +13,8 @@ services:
       - /etc/wireguard:/etc/wireguard
     environment:
       - WG_AUTH_TOKEN=${WG_AUTH_TOKEN:-your-secure-token}
+      - CLIENT_IPV4=${CLIENT_IPV4:-10.66.66.3}
+      - CLIENT_IPV6=${CLIENT_IPV6:-fd42:42:42::3}
     cap_add:
       - NET_ADMIN
     network_mode: host

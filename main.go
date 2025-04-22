@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,17 @@ func createClient(c *gin.Context) {
 		return
 	}
 
+	// Get client configuration from environment variables or use defaults
+	clientIPv4 := os.Getenv("CLIENT_IPV4")
+	if clientIPv4 == "" {
+		clientIPv4 = fmt.Sprintf("10.66.66.%d", getNextClientIP())
+	}
+
+	clientIPv6 := os.Getenv("CLIENT_IPV6")
+	if clientIPv6 == "" {
+		clientIPv6 = fmt.Sprintf("fd42:42:42::%d", getNextClientIP())
+	}
+
 	// Generate private key for client
 	privateKey, err := exec.Command("wg", "genkey").Output()
 	if err != nil {
@@ -90,17 +102,34 @@ func createClient(c *gin.Context) {
 	}
 
 	// Get server endpoint
-	serverEndpoint, err := exec.Command("hostname", "-I").Output()
+	var serverEndpoint string
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		logger.Error("Failed to get server endpoint: ", err)
 		c.JSON(500, gin.H{"error": "Failed to get server endpoint"})
 		return
 	}
 
+	// Find the first non-loopback IPv4 address
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				serverEndpoint = ipnet.IP.String()
+				break
+			}
+		}
+	}
+
+	if serverEndpoint == "" {
+		logger.Error("No suitable IP address found")
+		c.JSON(500, gin.H{"error": "No suitable IP address found"})
+		return
+	}
+
 	// Create client configuration
 	clientConfig := fmt.Sprintf(`[Interface]
 PrivateKey = %s
-Address = 10.66.66.%d/24
+Address = %s/32,%s/128
 DNS = 1.1.1.1, 1.0.0.1
 
 [Peer]
@@ -108,7 +137,7 @@ PublicKey = %s
 Endpoint = %s:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, strings.TrimSpace(string(privateKey)), getNextClientIP(), strings.TrimSpace(string(serverPubKey)), strings.TrimSpace(string(serverEndpoint)))
+`, strings.TrimSpace(string(privateKey)), clientIPv4, clientIPv6, strings.TrimSpace(string(serverPubKey)), serverEndpoint)
 
 	// Save client configuration
 	clientConfigPath := filepath.Join(wgConfigDir, fmt.Sprintf("%s.conf", client.Name))
@@ -119,7 +148,7 @@ PersistentKeepalive = 25
 	}
 
 	// Add peer to WireGuard interface
-	cmd = exec.Command("wg", "set", wgInterface, "peer", strings.TrimSpace(string(publicKey)), "allowed-ips", fmt.Sprintf("10.66.66.%d/32", getNextClientIP()))
+	cmd = exec.Command("wg", "set", wgInterface, "peer", strings.TrimSpace(string(publicKey)), "allowed-ips", fmt.Sprintf("%s/32", clientIPv4))
 	if err := cmd.Run(); err != nil {
 		logger.Error("Failed to add peer: ", err)
 		c.JSON(500, gin.H{"error": "Failed to add peer"})
