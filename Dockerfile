@@ -29,9 +29,12 @@ RUN chmod +x /usr/local/bin/wireguard-install.sh
 
 # Set environment variables
 ENV WG_AUTH_TOKEN=your-secure-token
+ENV PORT=8080
+ENV WG_PORT=51820
 
-# Expose port
-EXPOSE 8080
+# Expose ports
+EXPOSE ${PORT}
+EXPOSE ${WG_PORT}/udp
 
 # Run the application
 CMD ["wireguard-manager"] 

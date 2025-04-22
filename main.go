@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"github.com/skip2/go-qrcode"
 )
 
 var logger = logrus.New()
@@ -29,6 +30,13 @@ func init() {
 
 	// Load configuration
 	config = loadConfig()
+}
+
+func getWireGuardPort() string {
+	if port := os.Getenv("WG_PORT"); port != "" {
+		return port
+	}
+	return "51820" // Default port
 }
 
 func main() {
@@ -135,10 +143,10 @@ DNS = 1.1.1.1, 1.0.0.1
 
 [Peer]
 PublicKey = %s
-Endpoint = %s:51820
+Endpoint = %s:%s
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, strings.TrimSpace(string(privateKey)), clientIPv4, clientIPv6, strings.TrimSpace(string(serverPubKey)), serverEndpoint)
+`, strings.TrimSpace(string(privateKey)), clientIPv4, clientIPv6, strings.TrimSpace(string(serverPubKey)), serverEndpoint, getWireGuardPort())
 
 	// Save client configuration
 	clientConfigPath := filepath.Join(wgConfigDir, fmt.Sprintf("%s.conf", client.Name))
@@ -288,6 +296,19 @@ func getClient(c *gin.Context) {
 	if c.Query("raw") == "true" {
 		c.Header("Content-Type", "text/plain")
 		c.String(200, string(config))
+		return
+	}
+
+	// Check if QR code is requested
+	if c.Query("qr") == "true" {
+		qr, err := qrcode.Encode(string(config), qrcode.Medium, 256)
+		if err != nil {
+			logger.Error("Failed to generate QR code: ", err)
+			c.JSON(500, gin.H{"error": "Failed to generate QR code"})
+			return
+		}
+		c.Header("Content-Type", "image/png")
+		c.Data(200, "image/png", qr)
 		return
 	}
 
