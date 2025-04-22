@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  wireguard-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wireguard-manager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /etc/wireguard:/etc/wireguard
+    environment:
+      - WG_AUTH_TOKEN=${WG_AUTH_TOKEN:-your-secure-token}
+    cap_add:
+      - NET_ADMIN
+    network_mode: host
+    privileged: true
