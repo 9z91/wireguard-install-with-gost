@@ -46,6 +46,7 @@ func main() {
 	// Routes
 	r.POST("/clients", createClient)
 	r.GET("/clients", listClients)
+	r.GET("/clients/:name", getClient)
 	r.DELETE("/clients/:name", deleteClient)
 
 	// Start server
@@ -265,4 +266,33 @@ func atoi(s string) int {
 	var i int
 	fmt.Sscanf(s, "%d", &i)
 	return i
+}
+
+func getClient(c *gin.Context) {
+	clientName := c.Param("name")
+	if clientName == "" {
+		c.JSON(400, gin.H{"error": "Client name is required"})
+		return
+	}
+
+	// Read client configuration
+	clientConfigPath := filepath.Join(wgConfigDir, fmt.Sprintf("%s.conf", clientName))
+	config, err := os.ReadFile(clientConfigPath)
+	if err != nil {
+		logger.Error("Failed to read client configuration: ", err)
+		c.JSON(404, gin.H{"error": "Client not found"})
+		return
+	}
+
+	// Check if raw config is requested
+	if c.Query("raw") == "true" {
+		c.Header("Content-Type", "text/plain")
+		c.String(200, string(config))
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"name": clientName,
+		"config": string(config),
+	})
 } 
