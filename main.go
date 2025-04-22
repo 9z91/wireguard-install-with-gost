@@ -36,7 +36,7 @@ func getWireGuardPort() string {
 	if port := os.Getenv("WG_PORT"); port != "" {
 		return port
 	}
-	return "51820" // Default port
+	return "49321" // Default port
 }
 
 func main() {
